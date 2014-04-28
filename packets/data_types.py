@@ -114,6 +114,12 @@ class Variant(Construct):
         elif x == 7:
             return DictVariant("").parse_stream(stream)
 
+    def _build(self, obj, stream, context):
+        if obj is None:
+            _write_stream(stream, 1, '\x01')
+            return
+        raise NotImplementedError()
+
 class StarByteArray(Construct):
     def _parse(self, stream, context):
         l = VLQ("").parse_stream(stream)
