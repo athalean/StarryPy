@@ -64,8 +64,9 @@ class DBAuthPlugin(BasePlugin):
     def on_handshake_response(self, data):
         ip = self.protocol.transport.getPeer().host
         parsed = handshake_response().parse(data.data)
-        expected = self.expected.pop(ip, [])
-        challenge = self.challenge.pop(ip, '')
+        with self.lock:
+            expected = self.expected.pop(ip, [])
+            challenge = self.challenge.pop(ip, '')
         if parsed.hash in expected:
             # found a match
             # fake an actual authentication with the server here
