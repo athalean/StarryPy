@@ -1,5 +1,6 @@
 import base64
 from hashlib import sha256
+from threading import Lock
 
 from construct import *
 
@@ -34,6 +35,15 @@ class DBAuthPlugin(BasePlugin):
     # This plugin has still some very ugly hacks that make it work, so be careful when you use it
     name = "db_auth_plugin"
 
+    lock = Lock()
+
+    def activate(self):
+        super(DBAuthPlugin, self).activate()
+        self.expected = {}
+        self.challenge = {}
+        # TODO: Fetch from config.json
+        self.real_pw = ''
+
     def on_handshake_challenge(self, data):
         parsed = handshake_challenge().parse(data.data)
         # Note: The program generates ALL possible hashes here. You probably do not want
@@ -41,15 +51,25 @@ class DBAuthPlugin(BasePlugin):
         # TODO: Implement some form of guessing.
         expected = [generate_handshake_response(parsed.salt, user, pw, parsed.round_count) for
                     user, pw in valid_logins]
-        # TODO: put these in a dict to distinguish between users
-        self.expected = expected
-        self.challenge = parsed.salt
+        ip = self.protocol.transport.getPeer().host
+        with self.lock:
+            self.expected[ip] = expected
+            self.challenge[ip] = parsed.salt
+        new_data = build_packet(Packets.HANDSHAKE_CHALLENGE,
+            handshake_challenge().build(parsed)
+        )
+        self.protocol.transport.write(new_data)
+        return False
 
     def on_handshake_response(self, data):
+        ip = self.protocol.transport.getPeer().host
         parsed = handshake_response().parse(data.data)
-        if parsed.hash in self.expected:
+        expected = self.expected.pop(ip, [])
+        challenge = self.challenge.pop(ip, '')
+        if parsed.hash in expected:
             # found a match
-            new_hash = generate_handshake_response(self.challenge, '', '', 5000)
+            # fake an actual authentication with the server here
+            new_hash = generate_handshake_response(challenge, '', self.real_pw, 5000)
             new_data = build_packet(Packets.HANDSHAKE_RESPONSE, handshake_response().build(
                 Container(hash=new_hash, claim_response='')))
             self.protocol.client_protocol.transport.write(new_data)
