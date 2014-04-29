@@ -49,7 +49,8 @@
             "auto_activate": false,
             "db_path": "sqlite:///config/player.db",
             "plaintext_pws": false,
-            "real_pw": "duckies"
+            "real_pw": "duckies",
+            "rejection_reason": "Wrong account name or password."
         },
         "emotes_plugin": {
             "auto_activate": true

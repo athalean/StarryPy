@@ -86,15 +86,17 @@ class DBAuthPlugin(SimpleCommandPlugin):
             return False
         else:
             # found no match. Send the user home.
-            self.reject_with_reason('Wrong account name or password.')
+            reason = self.config.plugin_config['rejection_reason']
+            self.reject_with_reason(reason)
             return False
 
     def on_client_connect(self, data):
         parsed = client_connect().parse(data.data)
         ip = self.protocol.transport.getPeer().host
+        # remember the account name that the IP logged in with
         with self.lock:
             self.accounts[ip] = parsed.account
-        # strip the account from the connect package
+        # strip the account from the connect package so the server lets us in
         parsed.account = ''
         new_data = build_packet(Packets.CLIENT_CONNECT, client_connect().build(parsed))
         self.protocol.client_protocol.transport.write(new_data)
@@ -102,6 +104,7 @@ class DBAuthPlugin(SimpleCommandPlugin):
 
     def after_connect_response(self, data):
         my_storage = self.protocol.player.storage
+        # now that we know the player who logged in, log which account they belong to.
         ip = self.protocol.transport.getPeer().host
         with self.lock:
             account = self.accounts.pop(ip, '<unknown account>')
@@ -120,6 +123,7 @@ class DBAuthPlugin(SimpleCommandPlugin):
 
     @permissions(UserLevels.ADMIN)
     def new_user(self, data):
+        """Create a new user."""
         try:
             user, pw = data
         except ValueError:
@@ -137,6 +141,7 @@ class DBAuthPlugin(SimpleCommandPlugin):
 
     @permissions(UserLevels.GUEST)
     def change_password(self, data):
+        """Change your password."""
         try:
             newpw, = data
         except ValueError:
