@@ -8,31 +8,28 @@ from base_plugin import BasePlugin
 from packets import handshake_response, handshake_challenge, connect_response, client_connect
 from utility_functions import build_packet
 from packets.packet_types import Packets
+from manager import AuthManager
 
 
-def generate_handshake_response(challenge, account, password, rounds=5000):
+def generate_handshake_response(challenge, account, password, rounds=5000, plaintext_pw=True):
     """
     Calculate the response for a handshake, see
     http://starbound-dev.org/networking/connecting.html
     """
     salt = account + challenge
-    hash = sha256(password).digest()
+    if plaintext_pw:
+        hash = sha256(password).digest()
+    else:
+        hash = password
     for i in range(rounds):
         hash = sha256(hash + salt).digest()
     return base64.b64encode(hash)
 
-# TODO: Fetch these from a database
-valid_logins = [
-    ('user123', 'password123'),
-]
-
 
 class DBAuthPlugin(BasePlugin):
     """
-    Authorize users against a database instead of the passwort list in starbound.config.
+    Authorize users against the database instead of the password list in starbound.config.
     """
-
-    # This plugin has still some very ugly hacks that make it work, so be careful when you use it
     name = "db_auth_plugin"
 
     lock = Lock()
@@ -41,16 +38,23 @@ class DBAuthPlugin(BasePlugin):
         super(DBAuthPlugin, self).activate()
         self.expected = {}
         self.challenge = {}
-        # TODO: Fetch from config.json
-        self.real_pw = ''
+
+        db_path = self.config.plugin_config['db_path']
+        self.manager = AuthManager(db_path)
 
     def on_handshake_challenge(self, data):
         parsed = handshake_challenge().parse(data.data)
         # Note: The program generates ALL possible hashes here. You probably do not want
         # to use it in this form if you have more than 50 users on your server.
-        # TODO: Implement some form of guessing.
-        expected = [generate_handshake_response(parsed.salt, user, pw, parsed.round_count) for
-                    user, pw in valid_logins]
+        valid_logins = [(a.account.encode('utf-8'), a.password.encode('utf-8'))
+                        for a in self.manager.get_all_auth()]
+        plaintext_pws = self.config.plugin_config['plaintext_pws']
+        if not plaintext_pws:
+            valid_logins = [(name, pw.decode("hex")) for name, pw in valid_logins]
+        print valid_logins
+        expected = [generate_handshake_response(parsed.salt, user, pw, parsed.round_count,
+                                                plaintext_pw=plaintext_pws)
+                    for user, pw in valid_logins]
         ip = self.protocol.transport.getPeer().host
         with self.lock:
             self.expected[ip] = expected
@@ -70,7 +74,9 @@ class DBAuthPlugin(BasePlugin):
         if parsed.hash in expected:
             # found a match
             # fake an actual authentication with the server here
-            new_hash = generate_handshake_response(challenge, '', self.real_pw, 5000)
+            # real_pw is a password that the server would accept
+            new_hash = generate_handshake_response(challenge, '',
+                                                   self.config.plugin_config['real_pw'], 5000)
             new_data = build_packet(Packets.HANDSHAKE_RESPONSE, handshake_response().build(
                 Container(hash=new_hash, claim_response='')))
             self.protocol.client_protocol.transport.write(new_data)
