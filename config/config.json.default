@@ -46,7 +46,7 @@
             "auto_activate": true
         },
         "db_auth_plugin": {
-            "auto_activate": true,
+            "auto_activate": false,
             "db_path": "sqlite:///config/player.db",
             "plaintext_pws": false,
             "real_pw": "duckies"
