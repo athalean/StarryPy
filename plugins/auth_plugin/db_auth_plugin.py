@@ -6,6 +6,7 @@ from construct import *
 
 from base_plugin import SimpleCommandPlugin
 from packets import handshake_response, handshake_challenge, connect_response, client_connect
+from plugins.core import permissions, UserLevels
 from utility_functions import build_packet
 from packets.packet_types import Packets
 from manager import AuthManager
@@ -32,7 +33,7 @@ class DBAuthPlugin(SimpleCommandPlugin):
     """
     name = "db_auth_plugin"
     depends = ["command_dispatcher", "player_manager"]
-    commands = ["new_user"]
+    commands = ["new_user", "change_password"]
 
     lock = Lock()
 
@@ -116,3 +117,39 @@ class DBAuthPlugin(SimpleCommandPlugin):
             Container(success=False, client_id=0, reject_reason=reason)) + unlocked_sector_magic)
         self.protocol.transport.write(rejection)
         self.protocol.transport.loseConnection()
+
+    @permissions(UserLevels.ADMIN)
+    def new_user(self, data):
+        try:
+            user, pw = data
+        except ValueError:
+            self.protocol.send_chat_message("Syntax: /new_user <name> <password>")
+            return True
+
+        plaintext_pws = self.config.plugin_config['plaintext_pws']
+        try:
+            self.manager.create_account(user, pw, plaintext_pw=plaintext_pws)
+        except ValueError:
+            self.protocol.send_chat_message("User %s already exists." % user)
+            return True
+
+        self.protocol.send_chat_message("Successfully created user %s" % user)
+
+    @permissions(UserLevels.GUEST)
+    def change_password(self, data):
+        try:
+            newpw, = data
+        except ValueError:
+            self.protocol.send_chat_message("Syntax: /change_password <new_password>")
+            return True
+
+        try:
+            my_storage = self.protocol.player.storage
+        except AttributeError:
+            return
+
+        name = my_storage['last_account']
+        plaintext_pws = self.config.plugin_config['plaintext_pws']
+        self.manager.change_password(name, newpw, plaintext_pw=plaintext_pws)
+
+        self.protocol.send_chat_message("Successfully changed your password.")
