@@ -1,6 +1,6 @@
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, Table
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 from plugins.core.player_manager.manager import _autoclosing_session
 
 Base = declarative_base()
@@ -15,7 +15,6 @@ class AuthManager(object):
     def get_all_auth(self):
         with _autoclosing_session(self.sessionmaker) as session:
             return session.query(Accounts).all()
-
 
 class Accounts(Base):
     __tablename__ = 'auth'

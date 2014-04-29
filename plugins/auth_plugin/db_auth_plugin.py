@@ -4,7 +4,7 @@ from threading import Lock
 
 from construct import *
 
-from base_plugin import BasePlugin
+from base_plugin import SimpleCommandPlugin
 from packets import handshake_response, handshake_challenge, connect_response, client_connect
 from utility_functions import build_packet
 from packets.packet_types import Packets
@@ -26,11 +26,13 @@ def generate_handshake_response(challenge, account, password, rounds=5000, plain
     return base64.b64encode(hash)
 
 
-class DBAuthPlugin(BasePlugin):
+class DBAuthPlugin(SimpleCommandPlugin):
     """
     Authorize users against the database instead of the password list in starbound.config.
     """
     name = "db_auth_plugin"
+    depends = ["command_dispatcher", "player_manager"]
+    commands = ["new_user"]
 
     lock = Lock()
 
@@ -38,6 +40,7 @@ class DBAuthPlugin(BasePlugin):
         super(DBAuthPlugin, self).activate()
         self.expected = {}
         self.challenge = {}
+        self.accounts = {}
 
         db_path = self.config.plugin_config['db_path']
         self.manager = AuthManager(db_path)
@@ -51,7 +54,6 @@ class DBAuthPlugin(BasePlugin):
         plaintext_pws = self.config.plugin_config['plaintext_pws']
         if not plaintext_pws:
             valid_logins = [(name, pw.decode("hex")) for name, pw in valid_logins]
-        print valid_logins
         expected = [generate_handshake_response(parsed.salt, user, pw, parsed.round_count,
                                                 plaintext_pw=plaintext_pws)
                     for user, pw in valid_logins]
@@ -75,8 +77,8 @@ class DBAuthPlugin(BasePlugin):
             # found a match
             # fake an actual authentication with the server here
             # real_pw is a password that the server would accept
-            new_hash = generate_handshake_response(challenge, '',
-                                                   self.config.plugin_config['real_pw'], 5000)
+            real_pw = self.config.plugin_config['real_pw']
+            new_hash = generate_handshake_response(challenge, '', real_pw, 5000)
             new_data = build_packet(Packets.HANDSHAKE_RESPONSE, handshake_response().build(
                 Container(hash=new_hash, claim_response='')))
             self.protocol.client_protocol.transport.write(new_data)
@@ -88,11 +90,24 @@ class DBAuthPlugin(BasePlugin):
 
     def on_client_connect(self, data):
         parsed = client_connect().parse(data.data)
+        ip = self.protocol.transport.getPeer().host
+        with self.lock:
+            self.accounts[ip] = parsed.account
         # strip the account from the connect package
         parsed.account = ''
         new_data = build_packet(Packets.CLIENT_CONNECT, client_connect().build(parsed))
         self.protocol.client_protocol.transport.write(new_data)
         return False
+
+    def after_connect_response(self, data):
+        my_storage = self.protocol.player.storage
+        ip = self.protocol.transport.getPeer().host
+        with self.lock:
+            account = self.accounts.pop(ip, '<unknown account>')
+        my_storage['last_account'] = account
+        self.protocol.player.storage = my_storage
+        self.logger.info(
+            "%s was authenticated with account %s" % (self.protocol.player.name, account))
 
     def reject_with_reason(self, reason):
         magic_sector = "AQAAAAwAAAAy+gofAAX14QD/Z2mAAJiWgAUFYWxwaGEMQWxwaGEgU2VjdG9yAAAAELIfhbMFQWxwaGEHAgt0aHJlYXRMZXZlbAYCBAIEAg51bmxvY2tlZEJpb21lcwYHBQRhcmlkBQZkZXNlcnQFBmZvcmVzdAUEc25vdwUEbW9vbgUGYmFycmVuBQ1hc3Rlcm9pZGZpZWxkBwcCaWQFBWFscGhhBG5hbWUFDEFscGhhIFNlY3RvcgpzZWN0b3JTZWVkBISWofyWZgxzZWN0b3JTeW1ib2wFFy9jZWxlc3RpYWwvc2VjdG9yLzEucG5nCGh1ZVNoaWZ0BDsGcHJlZml4BQVBbHBoYQ93b3JsZFBhcmFtZXRlcnMHAgt0aHJlYXRMZXZlbAYCBAIEAg51bmxvY2tlZEJpb21lcwYHBQRhcmlkBQZkZXNlcnQFBmZvcmVzdAUEc25vdwUEbW9vbgUGYmFycmVuBQ1hc3Rlcm9pZGZpZWxkBGJldGELQmV0YSBTZWN0b3IAAADUWh1fvwRCZXRhBwILdGhyZWF0TGV2ZWwGAgQEBAQOdW5sb2NrZWRCaW9tZXMGCQUEYXJpZAUGZGVzZXJ0BQhzYXZhbm5haAUGZm9yZXN0BQRzbm93BQRtb29uBQZqdW5nbGUFBmJhcnJlbgUNYXN0ZXJvaWRmaWVsZAcHAmlkBQRiZXRhBG5hbWUFC0JldGEgU2VjdG9yCnNlY3RvclNlZWQEtYuh6v5+DHNlY3RvclN5bWJvbAUXL2NlbGVzdGlhbC9zZWN0b3IvMi5wbmcIaHVlU2hpZnQEAAZwcmVmaXgFBEJldGEPd29ybGRQYXJhbWV0ZXJzBwILdGhyZWF0TGV2ZWwGAgQEBAQOdW5sb2NrZWRCaW9tZXMGCQUEYXJpZAUGZGVzZXJ0BQhzYXZhbm5haAUGZm9yZXN0BQRzbm93BQRtb29uBQZqdW5nbGUFBmJhcnJlbgUNYXN0ZXJvaWRmaWVsZAVnYW1tYQxHYW1tYSBTZWN0b3IAAADMTMw79wVHYW1tYQcCC3RocmVhdExldmVsBgIEBgQGDnVubG9ja2VkQmlvbWVzBgoFBGFyaWQFBmRlc2VydAUIc2F2YW5uYWgFBmZvcmVzdAUEc25vdwUEbW9vbgUGanVuZ2xlBQpncmFzc2xhbmRzBQZiYXJyZW4FDWFzdGVyb2lkZmllbGQHBwJpZAUFZ2FtbWEEbmFtZQUMR2FtbWEgU2VjdG9yCnNlY3RvclNlZWQEs4nM4e9uDHNlY3RvclN5bWJvbAUXL2NlbGVzdGlhbC9zZWN0b3IvMy5wbmcIaHVlU2hpZnQEPAZwcmVmaXgFBUdhbW1hD3dvcmxkUGFyYW1ldGVycwcCC3RocmVhdExldmVsBgIEBgQGDnVubG9ja2VkQmlvbWVzBgoFBGFyaWQFBmRlc2VydAUIc2F2YW5uYWgFBmZvcmVzdAUEc25vdwUEbW9vbgUGanVuZ2xlBQpncmFzc2xhbmRzBQZiYXJyZW4FDWFzdGVyb2lkZmllbGQFZGVsdGEMRGVsdGEgU2VjdG9yAAAA1Ooj2GcFRGVsdGEHAgt0aHJlYXRMZXZlbAYCBAgECA51bmxvY2tlZEJpb21lcwYOBQRhcmlkBQZkZXNlcnQFCHNhdmFubmFoBQZmb3Jlc3QFBHNub3cFBG1vb24FBmp1bmdsZQUKZ3Jhc3NsYW5kcwUFbWFnbWEFCXRlbnRhY2xlcwUGdHVuZHJhBQh2b2xjYW5pYwUGYmFycmVuBQ1hc3Rlcm9pZGZpZWxkBwcCaWQFBWRlbHRhBG5hbWUFDERlbHRhIFNlY3RvcgpzZWN0b3JTZWVkBLWdop7hTgxzZWN0b3JTeW1ib2wFFy9jZWxlc3RpYWwvc2VjdG9yLzQucG5nCGh1ZVNoaWZ0BHgGcHJlZml4BQVEZWx0YQ93b3JsZFBhcmFtZXRlcnMHAgt0aHJlYXRMZXZlbAYCBAgECA51bmxvY2tlZEJpb21lcwYOBQRhcmlkBQZkZXNlcnQFCHNhdmFubmFoBQZmb3Jlc3QFBHNub3cFBG1vb24FBmp1bmdsZQUKZ3Jhc3NsYW5kcwUFbWFnbWEFCXRlbnRhY2xlcwUGdHVuZHJhBQh2b2xjYW5pYwUGYmFycmVuBQ1hc3Rlcm9pZGZpZWxkB3NlY3RvcngIWCBTZWN0b3IAAABjhzJHNwFYBwILdGhyZWF0TGV2ZWwGAgQKBBQOdW5sb2NrZWRCaW9tZXMGDgUEYXJpZAUGZGVzZXJ0BQhzYXZhbm5haAUGZm9yZXN0BQRzbm93BQRtb29uBQZqdW5nbGUFCmdyYXNzbGFuZHMFBW1hZ21hBQl0ZW50YWNsZXMFBnR1bmRyYQUIdm9sY2FuaWMFBmJhcnJlbgUNYXN0ZXJvaWRmaWVsZAcIAmlkBQdzZWN0b3J4BG5hbWUFCFggU2VjdG9yCnNlY3RvclNlZWQEmPDzkpxuDHNlY3RvclN5bWJvbAUXL2NlbGVzdGlhbC9zZWN0b3IveC5wbmcIaHVlU2hpZnQEgTQIcHZwRm9yY2UDAQZwcmVmaXgFAVgPd29ybGRQYXJhbWV0ZXJzBwILdGhyZWF0TGV2ZWwGAgQKBBQOdW5sb2NrZWRCaW9tZXMGDgUEYXJpZAUGZGVzZXJ0BQhzYXZhbm5haAUGZm9yZXN0BQRzbm93BQRtb29uBQZqdW5nbGUFCmdyYXNzbGFuZHMFBW1hZ21hBQl0ZW50YWNsZXMFBnR1bmRyYQUIdm9sY2FuaWMFBmJhcnJlbgUNYXN0ZXJvaWRmaWVsZA=="
